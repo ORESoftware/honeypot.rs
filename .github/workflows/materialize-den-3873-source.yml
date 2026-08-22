@@ -1,0 +1,155 @@
+name: Materialize DEN-3873 honeypot source
+
+on:
+  push:
+    branches:
+      - agent/den-3873-honeypot-foundation
+    paths:
+      - .bootstrap/**
+      - .github/workflows/materialize-den-3873-source.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-3873-honeypot-source-materialization
+  cancel-in-progress: false
+
+jobs:
+  materialize:
+    if: >-
+      github.repository == 'ORESoftware/honeypot.rs' &&
+      github.ref == 'refs/heads/agent/den-3873-honeypot-foundation'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the exact feature branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: agent/den-3873-honeypot-foundation
+          fetch-depth: 0
+          persist-credentials: true
+          show-progress: false
+
+      - name: Reconstruct and validate the deterministic source archive
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+
+          test "$(find .bootstrap -maxdepth 1 -type f -name 'part-*' | wc -l)" -eq 4
+          for part in 00 01 02 03; do
+            test -s ".bootstrap/part-${part}"
+          done
+
+          encoded="$RUNNER_TEMP/honeypot-source.tar.gz.b64"
+          archive="$RUNNER_TEMP/honeypot-source.tar.gz"
+          staging="$RUNNER_TEMP/honeypot-source"
+          cat .bootstrap/part-00 .bootstrap/part-01 .bootstrap/part-02 .bootstrap/part-03 > "$encoded"
+          base64 --decode "$encoded" > "$archive"
+          echo 'f9c9a127c2255ea8d9132bf8e5b78a8ce18a1d36ff4e31b928ff36253d75d1dc  '"$archive" | sha256sum --check --strict
+
+          mkdir -p "$staging"
+          ARCHIVE="$archive" STAGING="$staging" python3 - <<'PY'
+          from __future__ import annotations
+
+          import os
+          import tarfile
+          from pathlib import Path, PurePosixPath
+
+          archive = Path(os.environ["ARCHIVE"])
+          staging = Path(os.environ["STAGING"])
+          required = {
+              "./Cargo.toml",
+              "./README.md",
+              "./src/main.rs",
+              "./src/app.rs",
+              "./deploy/k8s/deployment.yaml",
+              "./.github/workflows/ci.yml",
+              "./scripts/validate_repo.py",
+          }
+
+          with tarfile.open(archive, mode="r:gz") as bundle:
+              members = bundle.getmembers()
+              files = [member for member in members if member.isfile()]
+              names = {member.name for member in files}
+              if len(files) != 25:
+                  raise SystemExit(f"expected 25 files, found {len(files)}")
+              if not required.issubset(names):
+                  raise SystemExit(f"archive is missing required files: {sorted(required - names)}")
+              for member in members:
+                  path = PurePosixPath(member.name)
+                  if path.is_absolute() or ".." in path.parts:
+                      raise SystemExit(f"unsafe archive path: {member.name}")
+                  if not (member.isfile() or member.isdir()):
+                      raise SystemExit(f"unsupported archive entry type: {member.name}")
+              bundle.extractall(staging, members=members, filter="data")
+          PY
+
+      - name: Replace bootstrap carrier with reviewed source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          staging="$RUNNER_TEMP/honeypot-source"
+          test -f "$staging/Cargo.toml"
+          test -f "$staging/src/main.rs"
+          test -f "$staging/.github/workflows/ci.yml"
+          rsync -a --delete --exclude=.git "$staging/" ./
+
+          test ! -e .bootstrap
+          test ! -e .github/workflows/materialize-den-3873-source.yml
+          test -f Cargo.toml
+          test -f README.md
+          test -f src/main.rs
+          test -f deploy/k8s/deployment.yaml
+
+      - name: Validate repository and reject live-secret material
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/validate_repo.py
+          if grep -RInE --exclude-dir=.git \
+            '(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|lin_api_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----)' \
+            .; then
+            echo 'potential live-secret material detected' >&2
+            exit 1
+          fi
+
+      - name: Commit the exact source tree without force or rebase
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          git add -- \
+            .dockerignore \
+            .github/workflows/ci.yml \
+            .gitignore \
+            AGENTS.md \
+            Cargo.toml \
+            Dockerfile \
+            LICENSE \
+            README.md \
+            SECURITY.md \
+            deploy \
+            docs \
+            rust-toolchain.toml \
+            scripts \
+            src
+          git add -u -- \
+            .bootstrap/part-00 \
+            .bootstrap/part-01 \
+            .bootstrap/part-02 \
+            .bootstrap/part-03 \
+            .github/workflows/materialize-den-3873-source.yml
+
+          git diff --cached --check
+          git diff --cached --quiet && {
+            echo 'no source changes were staged' >&2
+            exit 1
+          }
+          test -z "$(git status --porcelain | grep '^??' || true)"
+
+          git commit -m 'feat(DEN-3873): publish low-interaction honeypot foundation'
+          git push origin "HEAD:${GITHUB_REF_NAME}"
