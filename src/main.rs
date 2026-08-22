@@ -48,10 +48,7 @@ enum ConfigError {
     #[error("required configuration variable {0} is missing")]
     Missing(&'static str),
     #[error("configuration variable {name} is invalid: {reason}")]
-    Invalid {
-        name: &'static str,
-        reason: String,
-    },
+    Invalid { name: &'static str, reason: String },
     #[error("configuration variables TELEMETRY_HMAC_KEY and LURE_HMAC_KEY must be different")]
     ReusedKey,
 }
@@ -100,9 +97,8 @@ impl Settings {
             });
         }
 
-        let trusted_proxy_cidrs = parse_proxy_cidrs(
-            &env::var("TRUSTED_PROXY_CIDRS").unwrap_or_default(),
-        )?;
+        let trusted_proxy_cidrs =
+            parse_proxy_cidrs(&env::var("TRUSTED_PROXY_CIDRS").unwrap_or_default())?;
 
         Ok(Self {
             bind_addr,
@@ -290,9 +286,8 @@ impl EvidenceLedger {
     fn record(&mut self, actor: &str, signal: Signal, lure: &str) -> PolicyDecision {
         let now = Instant::now();
         let records = self.by_actor.entry(actor.to_owned()).or_default();
-        records.retain(|record| {
-            now.duration_since(record.observed_at) <= Duration::from_secs(86_400)
-        });
+        records
+            .retain(|record| now.duration_since(record.observed_at) <= Duration::from_secs(86_400));
         records.push_back(EvidenceRecord {
             observed_at: now,
             signal,
@@ -314,10 +309,8 @@ impl EvidenceLedger {
             .iter()
             .filter(|record| record.signal == Signal::LureViewed)
             .count();
-        let lure_families: BTreeSet<&str> = records
-            .iter()
-            .map(|record| record.lure.as_str())
-            .collect();
+        let lure_families: BTreeSet<&str> =
+            records.iter().map(|record| record.lure.as_str()).collect();
 
         if credential_count >= 3 && lure_families.len() >= 3 {
             decision(
@@ -429,11 +422,7 @@ async fn record_signal(
     let user_agent = headers
         .get(header::USER_AGENT)
         .map_or(&[][..], HeaderValue::as_bytes);
-    let user_agent_digest = hmac_hex(
-        &state.settings.telemetry_key,
-        b"user-agent",
-        user_agent,
-    );
+    let user_agent_digest = hmac_hex(&state.settings.telemetry_key, b"user-agent", user_agent);
     let user_agent_pseudonym = short_digest(&user_agent_digest, 24);
 
     let decision = state
@@ -488,9 +477,8 @@ async fn record_signal(
         core,
         signature_hmac_sha256,
     };
-    let encoded = serde_json::to_string(&event).unwrap_or_else(|_| {
-        "{\"schema\":\"ores.honeypot.serialization-error.v1\"}".to_owned()
-    });
+    let encoded = serde_json::to_string(&event)
+        .unwrap_or_else(|_| "{\"schema\":\"ores.honeypot.serialization-error.v1\"}".to_owned());
     tracing::info!(target: "security_event", event = %encoded);
     decision
 }
@@ -551,11 +539,7 @@ async fn guard(State(state): State<AppState>, request: Request, next: Next) -> R
     {
         Ok(Ok(permit)) => permit,
         _ => {
-            return secured_response(
-                StatusCode::TOO_MANY_REQUESTS,
-                "text/plain",
-                "busy\n",
-            );
+            return secured_response(StatusCode::TOO_MANY_REQUESTS, "text/plain", "busy\n");
         }
     };
 
@@ -595,7 +579,11 @@ fn with_security_headers(mut response: Response) -> Response {
     response
 }
 
-fn secured_response(status: StatusCode, content_type: &'static str, body: &'static str) -> Response {
+fn secured_response(
+    status: StatusCode,
+    content_type: &'static str,
+    body: &'static str,
+) -> Response {
     let mut response = (status, body).into_response();
     response
         .headers_mut()
@@ -935,8 +923,8 @@ async fn shutdown_signal() {
 }
 
 fn initialize_tracing() {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("honeypot_rs=info"));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("honeypot_rs=info"));
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .json()
