@@ -14,29 +14,43 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  format-artifact:
+  format-branch-once:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'agent/den-3873-honeypot-foundation'
+    permissions:
+      contents: write
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - name: Check out reviewed source
+      - name: Check out the exact feature branch
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          persist-credentials: false
+          ref: agent/den-3873-honeypot-foundation
+          fetch-depth: 0
+          persist-credentials: true
       - name: Install pinned Rust formatter
         shell: bash
         run: |
           set -euo pipefail
           rustup toolchain install 1.88.0 --profile minimal --component rustfmt
           rustup override set 1.88.0
-      - name: Produce canonical rustfmt output
-        run: cargo fmt --all
-      - name: Upload canonical source
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: rustfmt-source
-          path: src/main.rs
-          if-no-files-found: error
-          retention-days: 1
+      - name: Apply and publish canonical rustfmt output
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          if git diff --quiet -- src/main.rs; then
+            echo 'src/main.rs is already formatted'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- src/main.rs
+          git diff --cached --check
+          git commit -m 'style(DEN-3873): apply rustfmt'
+          git push origin HEAD:refs/heads/agent/den-3873-honeypot-foundation
 
   rust-and-policy:
     runs-on: ubuntu-24.04
