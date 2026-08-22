@@ -1,0 +1,161 @@
+name: Materialize reviewed DEN-3873 source payload
+
+on:
+  push:
+    branches:
+      - agent/den-3873-honeypot-foundation
+    paths:
+      - .bootstrap/**
+      - .github/workflows/materialize-den-3873-source.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-3873-source-materialization
+  cancel-in-progress: false
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the exact feature branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Verify and materialize the reviewed source tree
+        shell: bash
+        env:
+          EXPECTED_SHA256: f9c9a127c2255ea8d9132bf8e5b78a8ce18a1d36ff4e31b928ff36253d75d1dc
+        run: |
+          set -Eeuo pipefail
+          umask 077
+
+          test "$GITHUB_REF_NAME" = agent/den-3873-honeypot-foundation
+          parts=(
+            .bootstrap/part-00
+            .bootstrap/part-01
+            .bootstrap/part-02
+            .bootstrap/part-03
+          )
+          test "$(find .bootstrap -maxdepth 1 -type f -name 'part-*' | wc -l)" -eq 4
+          for part in "${parts[@]}"; do
+            test -s "$part"
+          done
+
+          payload_b64="$RUNNER_TEMP/honeypot-source.b64"
+          archive="$RUNNER_TEMP/honeypot-source.tar.gz"
+          staging="$RUNNER_TEMP/honeypot-source"
+          cat "${parts[@]}" > "$payload_b64"
+          test "$(wc -c < "$payload_b64")" -eq 23860
+          base64 --decode "$payload_b64" > "$archive"
+          printf '%s  %s\n' "$EXPECTED_SHA256" "$archive" | sha256sum --check --strict
+          mkdir -p "$staging"
+
+          python3 - "$archive" "$staging" <<'PY'
+          from __future__ import annotations
+
+          import sys
+          import tarfile
+          from pathlib import Path, PurePosixPath
+
+          archive = Path(sys.argv[1])
+          staging = Path(sys.argv[2])
+          expected_files = sorted(
+              [
+                  ".dockerignore",
+                  ".github/workflows/ci.yml",
+                  ".gitignore",
+                  "AGENTS.md",
+                  "Cargo.toml",
+                  "Dockerfile",
+                  "LICENSE",
+                  "README.md",
+                  "SECURITY.md",
+                  "deploy/k8s/deployment.yaml",
+                  "deploy/k8s/externalsecret.yaml",
+                  "deploy/k8s/kustomization.yaml",
+                  "deploy/k8s/networkpolicy.yaml",
+                  "deploy/k8s/service.yaml",
+                  "docs/cloudflare-ddos.md",
+                  "docs/fair-response-policy.md",
+                  "docs/k8s-deployment.md",
+                  "docs/threat-model.md",
+                  "rust-toolchain.toml",
+                  "scripts/validate_repo.py",
+                  "src/app.rs",
+                  "src/config.rs",
+                  "src/crypto.rs",
+                  "src/main.rs",
+                  "src/policy.rs",
+              ]
+          )
+
+          with tarfile.open(archive, mode="r:gz") as source:
+              members = source.getmembers()
+              actual_files: list[str] = []
+              for member in members:
+                  path = PurePosixPath(member.name)
+                  if path.is_absolute() or ".." in path.parts:
+                      raise SystemExit(f"unsafe archive path: {member.name}")
+                  if ".git" in path.parts:
+                      raise SystemExit(f"Git metadata is forbidden: {member.name}")
+                  if member.issym() or member.islnk() or member.isdev():
+                      raise SystemExit(f"non-regular archive entry is forbidden: {member.name}")
+                  if member.isfile():
+                      actual_files.append(str(path))
+              if sorted(actual_files) != expected_files:
+                  raise SystemExit(
+                      f"archive file manifest mismatch: {sorted(actual_files)!r}"
+                  )
+              source.extractall(staging, filter="data")
+          PY
+
+          test -f "$staging/Cargo.toml"
+          test -f "$staging/.github/workflows/ci.yml"
+          test ! -e "$staging/.bootstrap"
+          python3 "$staging/scripts/validate_repo.py"
+
+          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf -- {} +
+          cp -a "$staging/." .
+
+          test ! -e .bootstrap
+          test ! -e .github/workflows/materialize-den-3873-source.yml
+          test -f Cargo.toml
+          test -f src/main.rs
+          test -f deploy/k8s/networkpolicy.yaml
+          python3 scripts/validate_repo.py
+
+      - name: Commit the source tree without broad staging
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          git add -- \
+            .dockerignore \
+            .gitignore \
+            AGENTS.md \
+            Cargo.toml \
+            Dockerfile \
+            LICENSE \
+            README.md \
+            SECURITY.md \
+            rust-toolchain.toml
+          git add -- .github deploy docs scripts src
+          git add -u -- .bootstrap
+
+          test -z "$(git diff --name-only)"
+          git diff --cached --check
+          git diff --cached --name-only
+          if git diff --cached --quiet; then
+            echo 'No materialization changes were staged.' >&2
+            exit 1
+          fi
+
+          git commit -m 'feat(DEN-3873): publish low-interaction honeypot foundation'
+          git push origin "HEAD:${GITHUB_REF_NAME}"
