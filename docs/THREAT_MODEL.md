@@ -40,7 +40,7 @@ The first release assumes opportunistic scanners, credential harvesters, exploit
 
 ## Explicitly out of scope
 
-- Hack-back or counter-intrusion.
+- No hack-back or counter-intrusion.
 - Malware delivery or booby-trapped downloads.
 - Public naming, shaming, or real-world identity attribution.
 - Full packet capture by default.
