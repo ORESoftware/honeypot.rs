@@ -2,7 +2,7 @@
 
 ## Core rule
 
-Do **not** point denial-of-service traffic at the honeypot. A honeypot is an evidence sensor, not a scrubbing center. Volumetric traffic must be absorbed, challenged, rate-limited, or dropped at Cloudflare before an origin request is created.
+Do not point denial-of-service traffic at the honeypot. A honeypot is an evidence sensor, not a scrubbing center. Volumetric traffic must be absorbed, challenged, rate-limited, or dropped at Cloudflare before an origin request is created.
 
 ```text
 Internet
