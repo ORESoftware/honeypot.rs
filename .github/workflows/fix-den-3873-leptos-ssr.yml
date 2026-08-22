@@ -1,0 +1,81 @@
+name: Repair DEN-3873 Leptos SSR namespace
+
+on:
+  push:
+    branches:
+      - agent/den-3873-honeypot-foundation
+    paths:
+      - .github/workflows/fix-den-3873-leptos-ssr.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-3873-leptos-ssr-repair
+  cancel-in-progress: false
+
+jobs:
+  repair-and-validate:
+    if: >-
+      github.repository == 'ORESoftware/honeypot.rs' &&
+      github.ref == 'refs/heads/agent/den-3873-honeypot-foundation'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out the exact feature branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: agent/den-3873-honeypot-foundation
+          fetch-depth: 0
+          persist-credentials: true
+          show-progress: false
+
+      - name: Repair only the invalid Leptos SSR namespace
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('build.rs')
+          text = path.read_text(encoding='utf-8')
+          bad = 'leptos::prelude::ssr::'
+          good = 'leptos::ssr::'
+          count = text.count(bad)
+          if count != 2:
+              raise SystemExit(f'expected exactly two invalid namespace uses, found {count}')
+          text = text.replace(bad, good)
+          if bad in text:
+              raise SystemExit('invalid namespace remains after repair')
+          path.write_text(text, encoding='utf-8')
+          PY
+          git diff --check -- build.rs
+          grep -F 'leptos::ssr::render_to_string' build.rs >/dev/null
+          grep -F 'leptos::ssr::render_to_stream_with_prefix_undisposed_with_context' build.rs >/dev/null
+          ! grep -F 'leptos::prelude::ssr::' build.rs
+
+      - name: Run the complete source and policy gate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets --all-features -- -D warnings
+          cargo test --workspace --all-targets --all-features --locked
+          cargo build --workspace --locked
+          python3 scripts/check-k8s.py deploy/k8s
+          bash scripts/check-policy.sh
+          bash scripts/check-secrets.sh
+          bash scripts/check-api-compat.sh
+
+      - name: Commit the validated repair and remove this one-shot workflow
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          rm -- .github/workflows/fix-den-3873-leptos-ssr.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- build.rs
+          git add -u -- .github/workflows/fix-den-3873-leptos-ssr.yml
+          git diff --cached --check
+          git commit -m 'fix(DEN-3873): restore Leptos SSR module paths'
+          git push origin 'HEAD:agent/den-3873-honeypot-foundation'
