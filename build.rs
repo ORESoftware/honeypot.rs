@@ -83,6 +83,12 @@ where
     )?;
     source = replace_exact(
         source,
+        "async fn record_signal(\n",
+        "#[allow(clippy::too_many_arguments)]\nasync fn record_signal(\n",
+        1,
+    )?;
+    source = replace_exact(
+        source,
         "header::PERMISSIONS_POLICY",
         "axum::http::HeaderName::from_static(\"permissions-policy\")",
         1,
