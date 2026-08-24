@@ -65,8 +65,21 @@ where
         ))
     }
 }
+
+fn render_to_string<V>(view: impl FnOnce() -> V) -> String
+where
+    V: RenderHtml,
+{
+    view().to_html()
+}
 "#,
         1,
+    )?;
+    source = replace_exact(
+        source,
+        "leptos::ssr::render_to_string",
+        "render_to_string",
+        2,
     )?;
     source = replace_exact(
         source,
