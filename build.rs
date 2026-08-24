@@ -70,12 +70,6 @@ where
     )?;
     source = replace_exact(
         source,
-        "leptos::ssr::render_to_string",
-        "leptos::prelude::ssr::render_to_string",
-        2,
-    )?;
-    source = replace_exact(
-        source,
         "header::PERMISSIONS_POLICY",
         "axum::http::HeaderName::from_static(\"permissions-policy\")",
         1,
