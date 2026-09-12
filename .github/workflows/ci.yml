@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: honeypot-rs-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust-and-policy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out reviewed source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.88.0 --profile minimal --component clippy,rustfmt
+          rustup override set 1.88.0
+      - name: Validate repository policy
+        run: python3 scripts/validate.py
+      - name: Generate dependency lock for reproducible checks
+        run: cargo generate-lockfile
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Run Clippy with warnings denied
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+      - name: Run tests
+        run: cargo test --all-targets --all-features --locked
+      - name: Build release binary
+        run: cargo build --release --locked
+      - name: Reject accidental credential material
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git grep -nE -- ': (ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk_live_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16})' -- ':!README.md' ':!src/main.rs'; then
+            echo 'credential-shaped material found' >&2
+            exit 1
+          fi
+
+  container:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out reviewed source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Build OCI image
+        run: docker build --tag honeypot-rs:ci .
+      - name: Inspect non-root runtime declaration
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(docker image inspect honeypot-rs:ci --format '{{.Config.User}}')" = 65532:65532
+          test "$(docker image inspect honeypot-rs:ci --format '{{json .Config.Entrypoint}}')" = '["/usr/local/bin/honeypot-rs"]'
