@@ -7,3 +7,6 @@ env/dec/
 .DS_Store
 .idea/
 .vscode/
+# Sanctioned scratch locations - AGENTS.md requires both, trailing-slash form
+tmp/
+temp/
